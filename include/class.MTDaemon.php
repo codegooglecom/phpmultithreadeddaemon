@@ -30,10 +30,12 @@
  *
  * @package     MTD
  * @author      Benoit Perroud <ben@migtechnology.ch>
- * @location    http://code.google.com/p/phpmultithreadeddaemon/
  * @copyright   2007 Benoit Perroud
  * @license     http://www.gnu.org/copyleft/gpl.html
- * @version     $Id$
+ * @version     $Id Author$
+ *
+ * See http://code.google.com/p/phpmultithreadeddaemon/ for more information
+ *
  */
 
 abstract class MTDaemon 
