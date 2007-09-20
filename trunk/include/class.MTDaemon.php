@@ -34,7 +34,8 @@
  * @license     http://www.gnu.org/copyleft/gpl.html
  * @version     $Id$
  *
- * See http://code.google.com/p/phpmultithreadeddaemon/ for more information
+ * See http://code.google.com/p/phpmultithreadeddaemon/ 
+ * and http://phpmultithreaddaemon.blogspot.com/ for more information
  *
  */
 

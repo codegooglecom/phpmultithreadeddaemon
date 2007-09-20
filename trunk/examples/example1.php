@@ -8,32 +8,37 @@ class MTTest extends MTDaemon {
 
     public function getNext($slot)
     {
+        $this->lock();
         $num = $this->getVar('num');
         if ($num == null) $num = 1;
-
+        if ($num > 100) {
+            $this->unlock();
+            return null;
+        }
+        $this->unlock();
         
-        $rand = rand();
+        $rand = rand(0, 5);
         echo 'Next for slot ' . $slot . ' : ' . $rand . "\n";
-        return null;
-        return $rand;
+        if ($rand == 0) return null;
+        else return $rand;
     }
 
     public function run($next, $slot)
     {
-        $rand = rand(0, 100);
+        $rand = rand(3, 10);
         $this->lock();
         $num = $this->getVar('num');
         $this->setVar('num', $this->getVar('num') + 1);
         $this->unlock();
         echo '## Iteration #' . number_format($num) . ' in ' . $rand . 'sec' . "\n";
         
-        usleep($rand);
+        sleep($rand);
         return 0;
     }
 
 }
 
-$mttest = new MTTest(8);
+$mttest = new MTTest(2);
 $mttest->handle();
 
 ?>
