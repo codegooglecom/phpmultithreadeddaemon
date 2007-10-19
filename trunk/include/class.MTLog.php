@@ -32,7 +32,7 @@
  * @author      Benoit Perroud <ben@migtechnology.ch>
  * @copyright   2007 Benoit Perroud
  * @license     http://www.gnu.org/copyleft/gpl.html
- * @version     $Id: class.MTLog.php 5 2007-09-20 07:49:44Z killerwhile $
+ * @version     $Id$
  *
  * See http://code.google.com/p/phpmultithreadeddaemon/ 
  * and http://phpmultithreaddaemon.blogspot.com/ for more information
@@ -116,5 +116,4 @@ class MTLog {
         }
     }
 }
-
 
