@@ -39,6 +39,8 @@
  *
  */
 
+require_once dirname(__FILE__) . '/class.MTLog.php';
+
 abstract class MTDaemon 
 {
 
@@ -52,10 +54,6 @@ abstract class MTDaemon
     // sleep time when no job
     protected $idle_sleep_time = 5; 
 
-    // verbosity of the debug;
-    protected $verbosity = 1;
-
-
     /*
      * Internal constants
      */
@@ -66,9 +64,14 @@ abstract class MTDaemon
     /*
      * Internal variables
      */
-    protected $shm; // = ftok(__FILE__, 'c');
-    protected $shared_data; // = shm_attach($this->shm);
-    protected $mutex; // lock critical path, used in lock() and unlock()
+    protected $shm;                         // = ftok(__FILE__, 'g');
+    protected $shared_data;                 // = shm_attach($this->shm);
+
+    protected $mutex;                       // lock critical path, used in lock() and unlock()
+    protected $mutex_main_process;          // lock main process only. Children can continue to run
+    protected $mutex_children_processes;    // lock children processes only. Main can continue to run
+
+    protected $main_thread_pid;
 
     /*
      * Constructor
@@ -80,6 +83,7 @@ abstract class MTDaemon
     {
         if ($threads) $this->max_threads = $threads;
         if ($idlesleeptime) $this->idle_sleep_time = $idlesleeptime;
+        $this->main_thread_pid = posix_getpid();
     }
 
     /*
@@ -89,12 +93,14 @@ abstract class MTDaemon
      */
     protected function _prerun()
     {
-        echo 'Starting daemon with ' . $this->max_threads . ' slots' . "\n";
+        MTLog::getInstance()->info('Starting daemon with ' . $this->max_threads . ' slots');
 
-        $this->shm = ftok(__FILE__, 'c');
-        $this->shared_data = shm_attach($this->shm);
-        $this->mutex = sem_get($this->shm);
-//        $this->mutex_process = sem_get($this->shm);
+        $this->shm                      = ftok(__FILE__, 'g'); // global shm
+        $this->shared_data              = shm_attach($this->shm);
+
+        $this->mutex                    = sem_get($this->shm);
+        $this->mutex_main_process       = sem_get(ftok(__FILE__, 'm'));
+        $this->mutex_children_processes = sem_get(ftok(__FILE__, 'c'));
 
         shm_put_var($this->shared_data, self::_INDEX_DATA, array());
 
@@ -112,7 +118,7 @@ abstract class MTDaemon
      */
     protected function _postrun()
     {
-        echo 'Stopping daemon. ' . "\n";
+        MTLog::getInstance()->info('Stopping daemon. ');
 
         shm_remove($this->shared_data);
         sem_remove($this->mutex);
@@ -136,27 +142,29 @@ abstract class MTDaemon
              * Terminating all child, to not let some zombie leaking the memory.
              */
 
-            echo '-- Next iteration ' . "\n";
+            MTLog::getInstance()->debug2('-- Next iteration ');
 
             $this->lock();
 
+            // HACK : avoid zombie and free earlier the memory
             do {
                 $res = pcntl_wait($status, WNOHANG);
-                echo '$res = pcntl_wait($status, WNOHANG); called with $res = ' . $res . "\n";
-                if ($res > 0) echo '(finishing child with pid ' . $res . ')' . "\n";
+                MTLog::getInstance()->debug2('$res = pcntl_wait($status, WNOHANG); called with $res = ' . $res);
+                if ($res > 0) MTLog::getInstance()->debug('(finishing child with pid ' . $res . ')');
             } while ($res > 0);
 
             /*
-             * If there is a free slot for the next process ?
+             * Loop until a slot frees 
              */
             while (!$this->hasFreeSlot()) {
                 $this->unlock();
-                echo 'No more free slot, waiting' . "\n";
+                MTLog::getInstance()->debug('No more free slot, waiting');
                 $res = pcntl_wait($status); // wait until a child ends up
-                echo '$res = pcntl_wait($status); called with $res = ' . $res . "\n";
-                if ($res > 0) echo 'Finishing child with pid ' . $res . "\n";
-                else {
-                    echo 'Outch1, this souldn\'t happen. Verify our implementation ...' . "\n";
+                MTLog::getInstance()->debug2('$res = pcntl_wait($status); called with $res = ' . $res);
+                if ($res > 0) {
+                    MTLog::getInstance()->debug('Finishing child with pid ' . $res);
+                } else {
+                    MTLog::getInstance()->error('Outch1, this souldn\'t happen. Verify your implementation ...');
                     $this->run = false;
                     continue;
                 }
@@ -173,7 +181,7 @@ abstract class MTDaemon
                 var_dump(shm_get_var($this->shared_data, self::_INDEX_THREADS));
                 var_dump(shm_get_var($this->shared_data, self::_INDEX_SLOTS));
 
-                echo 'Outch2, this souldn\'t happen. Verify our implementation ...' . "\n";
+                MTLog::getInstance()->error('Outch2, this souldn\'t happen. Verify your implementation ...');
                 $this->run = false;
                 continue;
             }
@@ -186,9 +194,9 @@ abstract class MTDaemon
             /*
              * If no job
              */
-            if (is_null($next)) {
+            if (!$next) {
 
-                echo 'No job, sleeping at most ' . $this->idle_sleep_time . ' sec ... ' . "\n";
+                MTLog::getInstance()->debug('No job, sleeping at most ' . $this->idle_sleep_time . ' sec ... ');
 
 // TODO : waiting for signal pushed into a queue when inserting a new job.
 
@@ -206,17 +214,17 @@ abstract class MTDaemon
                 $pid = pcntl_fork();
 
                 if ($pid == -1) {
-                        echo '[fork] Duplication impossible' . "\n";
+                        MTLog::getInstance()->error('[fork] Duplication impossible');
                         $this->run = false;
                         continue;
                 } else if ($pid) {
 
-                        usleep(10); // give the hand to the child -> a simple way to better handle zombies
+                        usleep(10); // HACK : give the hand to the child -> a simple way to better handle zombies
 
                         continue;
                 } else {
 
-                    echo 'Executing thread #' . posix_getpid() . ' in slot ' . number_format($slot) . "\n";
+                    MTLog::getInstance()->debug('Executing thread #' . posix_getpid() . ' in slot ' . number_format($slot));
 
                     $res = $this->run($next, $slot);
 
@@ -238,7 +246,7 @@ abstract class MTDaemon
     /*
      * Request data of the next element to run in a thread
      * 
-     * return null if no job currently
+     * return null or false if no job currently
      */
     abstract public function getNext($slot);
 
@@ -254,7 +262,9 @@ abstract class MTDaemon
      */
     protected function lock()
     {
-        sem_acquire($this->mutex);
+        MTLog::getInstance()->debug2('[lock] lock');
+        $res = sem_acquire($this->mutex);
+        if (!$res) exit(-1);
     }
 
     /*
@@ -262,7 +272,49 @@ abstract class MTDaemon
      */
     protected function unlock()
     {
-        sem_release($this->mutex);
+        MTLog::getInstance()->debug2('[lock] unlock');
+        $res = sem_release($this->mutex);
+        if (!$res) exit(-1);
+    }
+
+    /*
+     *
+     */
+    protected function lockMain()
+    {
+        MTLog::getInstance()->debug2('[lock] lock main process');
+        $res = sem_acquire($this->mutex_main_process);
+        if (!$res) exit(-1);
+    }
+
+    /*
+     *
+     */
+    protected function unlockMain()
+    {
+        MTLog::getInstance()->debug2('[lock] unlock main process');
+        $res = sem_release($this->mutex_main_process);
+        if (!$res) exit(-1);
+    }
+
+    /*
+     *
+     */
+    protected function lockChildren()
+    {
+        MTLog::getInstance()->debug2('[lock] lock children processes');
+        $res = sem_acquire($this->mutex_children_processes);
+        if (!$res) exit(-1);
+    }
+
+    /*
+     *
+     */
+    protected function unlockChildren()
+    {
+        MTLog::getInstance()->debug2('[lock] unlock children processes');
+        $res = sem_release($this->mutex_children_processes);
+        if (!$res) exit(-1);
     }
 
     /*
@@ -324,7 +376,7 @@ abstract class MTDaemon
         if ($lock) $this->lock();
         $threads = $this->getThreads();
         $res = shm_put_var($this->shared_data, self::_INDEX_THREADS, $threads + 1);
-        echo 'incThreads, $threads = ' . ($threads + 1) . "\n";
+        MTLog::getInstance()->debug('incThreads, $threads = ' . ($threads + 1));
         if ($lock) $this->unlock();
         return $res;
     }
@@ -337,7 +389,7 @@ abstract class MTDaemon
         if ($lock) $this->lock();
         $threads = $this->getThreads();
         $res = shm_put_var($this->shared_data, self::_INDEX_THREADS, $threads - 1);
-        echo 'decThreads, $threads = ' . ($threads - 1) . "\n";
+        MTLog::getInstance()->debug('decThreads, $threads = ' . ($threads - 1));
         if ($lock) $this->unlock();
         return $res;
     }
@@ -349,7 +401,7 @@ abstract class MTDaemon
     {
         $threads = $this->getThreads();
         $res = ($threads < $this->max_threads) ? true : false;
-        echo 'Has free slot ? => #running threads = ' . $threads . "\n";
+        MTLog::getInstance()->debug('Has free slot ? => #running threads = ' . $threads);
         return $res;
     }
 
@@ -360,7 +412,7 @@ abstract class MTDaemon
      */
     protected function requestSlot($lock = false)
     {
-        echo 'Requesting slot ... ';
+        MTLog::getInstance()->debug('Requesting slot ... ');
         $slot = null;
         if ($lock) $this->lock();
         $slots = shm_get_var($this->shared_data, self::_INDEX_SLOTS);
@@ -379,8 +431,11 @@ abstract class MTDaemon
         }
         shm_put_var($this->shared_data, self::_INDEX_SLOTS, $slots);
         if ($lock) $this->unlock();
-        if (is_null($slot)) echo 'no free slots !!' . "\n";
-        else echo 'slot ' . $slot . ' found.' . "\n";
+        if (is_null($slot)) {
+            MTLog::getInstance()->debug('no free slots !!');
+        } else {
+            MTLog::getInstance()->debug('slot ' . $slot . ' found.');
+        }
         return $slot;
     }
 
@@ -393,7 +448,7 @@ abstract class MTDaemon
         $slots[$slot] = false;
         shm_put_var($this->shared_data, self::_INDEX_SLOTS, $slots);
         if ($lock) $this->unlock();
-        echo 'Releasing slot ' . $slot . "\n";
+        MTLog::getInstance()->debug('Releasing slot ' . $slot);
         return true;
     }
 
