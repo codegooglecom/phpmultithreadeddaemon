@@ -454,4 +454,3 @@ abstract class MTDaemon
 
 }
 
-?>
